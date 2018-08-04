@@ -1,6 +1,8 @@
 ---
 title: "Distributed calculation of linear regression"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 Based on [this wonderful post](https://freakonometrics.hypotheses.org/53269), but adapted to a "tidy" approach for coding in R. Therefore we start by ...
