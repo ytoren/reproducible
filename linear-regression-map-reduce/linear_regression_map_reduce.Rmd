@@ -1,0 +1,160 @@
+---
+title: "Distributed calculation of linear regression"
+output: html_notebook
+---
+
+Based on [this wonderful post](https://freakonometrics.hypotheses.org/53269), but adapted to a "tidy" approach for coding in R. Therefore we start by ...
+
+```{r}
+require(tidyverse)
+```
+
+# Built-in function
+
+For reference, this is the result of the built-in R function `lm`
+```{r}
+lm(dist~speed,data=cars)$coefficients
+```
+# Matrix multiplication
+This is what's behind the function 
+
+```{r}
+X = data_frame(intercept = 1, speed = cars$speed) %>% as.matrix()
+y = cars$dist
+```
+
+And we can see that matrix multiplication $\left( X^{T}X \right)^{-1} X^{T} y$ gives the same results
+
+```{r}
+solve(t(X) %*% X) %*% t(X) %*% y %>% t()
+```
+
+
+# QR decomposition
+
+A well know result when using the QR decomposition $X = QR$ (with $Q^{T} Q = \mathbb{I}$)
+
+$$ \hat{\beta} = \left( X^{T} X \right)^{-1} X^{T} y = \left( R^{T}Q^{T} QR \right)^{-1} R^{T}Q^{T} y = \left( R^{T} R \right)^{-1} R^{T}Q^{T} y = R^{-1} \left( R^{T} \right)^{-1} R^{T} Q^{T} y  = R^{-1} Q^{T} y$$ 
+And again we get the same results:
+
+```{r}
+(X %>% qr %>% qr.R %>% solve()) %*% 
+  (X %>% qr %>% qr.Q %>% t()) %*% 
+  y %>% 
+  t()
+```
+
+# Map reduce
+
+As our data matrix increases in size (either number rows as observations or columns as attributes), the inversion part of the calculation `solve` and/or QR-factorization `qr` become more memory and time intensive for a single thread calculation.
+
+## Map
+
+Let's say we have `m = 5` cores at our disposal and we'd like to distribute the calculation.
+
+```{r}
+m <- 24
+```
+
+We define the process in a "tidy" way, so all `map` operations here are [embarrassingly parallel](https://en.wikipedia.org/wiki/Embarrassingly_parallel). For simplicity we split the rows between the blocks using modulo operation, but this can be done sequentially or based on existing partitions.
+
+
+```{r}
+mats <- X %>%
+  as_data_frame() %>%
+  mutate(
+    id = row_number() %% m,
+    y = y
+  ) %>% 
+  ## this is where partitioning happens
+  nest(-id) %>% 
+  mutate(
+    X = map(data, ~ .x %>% select(-y) %>% as.matrix()),
+    y = map(data, ~ .x %>% pull(y))
+  ) %>% 
+  ## We calculate QR decomposition for each partition independently
+  mutate(
+    Q2 = map(X, ~ .x %>% qr() %>% qr.Q()),
+    R1 = map(X, ~ .x %>% qr() %>% qr.R())
+  )
+```
+
+## Collect
+
+Having some of the heavy lifting in a distributed way (in the case the QR decomposition) we can collect the results 
+
+```{r}
+df_collect <- mats$R1 %>% do.call(what = 'rbind', args = .)
+```
+
+And continue our calculations with a matrix of lower dimensions (number of partitions X number of columns)
+
+
+```{r}
+data.frame(dimension = c('rows', 'columns'), cbind(X %>% dim(), df_collect %>% dim()))
+```
+
+## Reduce
+
+Final calculations require only the small matrix we've created:
+
+```{r}
+Q1 = df_collect %>% qr %>% qr.Q
+R2 = df_collect %>% qr %>% qr.R
+
+mats$Q1 = Q1 %>% 
+  as_data_frame() %>% 
+  mutate(id = ceiling(row_number() / dim(mats$R1[[1]])[2])) %>% 
+  nest(-id) %>% 
+  mutate(data = map(data, ~ as.matrix(.x))) %>% 
+  pull(data)
+
+v_sum = mats %>% 
+  mutate(Q3_t = map2(.x = Q2, .y = Q1, .f = ~ t(.x %*% .y))) %>%
+  mutate(V = map2(.x = Q3_t, .y = y, .f = ~ .x %*% .y)) %>% 
+  pull(V) %>% 
+  reduce(`+`)
+
+t(solve(R2) %*% v_sum)
+```
+
+Voila! :)
+
+# A note the number of nodes vs. efficiency 
+
+As the number of nodes available to us increases, we encounter a little paradox - at some point the calculation time will actually start getting longer! This is because we run QR-factorization (QRF) both on the map *and* the reduce stage. 
+
+Think of 2 extreme examples: 
+
+1. $m=1$: We run QRF the entire matrix on a single node and end up with 2X2 matrix for the second QRF (this is `dim()`).
+
+2. $m=50$: The QRF on each node is trivial and returns the original row $X_i$ that was sent to the node, so the second QRF is in-fact again a full scale QRF of the original function (with `df_collect = X`)
+
+But - sending data to the nodes and collecting it has overhead, so in fact our expected run-time with 50 nodes is longer than with 1 node! 
+
+We can demonstrate the trade-off with a simple formula: 
+
+* From digging around the web (_citation needed_), we know that the QR algorithm has a complexity of $O(n k^2)$, where $n$ is the number of rows and $k$ is the number of columns. 
+* This means that run-time for `qr` should be proportional to the number of rows. Instead of looking at at specific duration we just generally mark it as a single unit of time (so $t_r = 1$ arbitrarily) .
+* We also denote the time to set-up a nodes as $\delta$ (for "overhead"). Again, this does not stand for a specific duration but for the ratio between the overhead time and the time increment per-row.
+* We neglect the communication time between the mapper and the nodes (and if it's proportional to $n$ it remains fixed anyway)
+* And a final simplification is that we only look at values of $m$ that are factors of $n$ ($n/m \in \mathbb{N}$) and ignore the trivial case where $m = n$ (it just makes the math more simple...)
+
+With this in mind we can calculate the total run-time $T$ (in $t_r$ units) as the time it takes to set-up the nodes + the time it takes to run QRF on each node (which is the number of nodes X number of rows per nodes X time per row divided by number of nodes, as they run in parallel) + the time to run QRF on the reduced matrix (which is the number of rows of the reduced matrix X time per row):
+
+$$ T = m \delta + m \frac{n}{m} \frac{1}{m} + m k = m(\delta + k) + \frac{n}{m} $$ 
+
+We can plot our example ($k = 2, n = 50$) and see how sensitive is the optimal choice to the overhead time ratio $\delta$ 
+
+```{r}
+data.frame(m = c(1,2,5,10,25)) %>% 
+  mutate(
+    time1 = m * (1 + 2 ) + 50 / m, 
+    time2 = m * (2 + 2 ) + 50 / m,
+    time5 = m * (5 + 2 ) + 50 / m,
+    time20 = m * (10 + 2 ) + 50 / m,
+    time100 = m * (100 + 2 ) + 50 / m
+  )
+```
+
+And as expected - as the overhead time increases the time saved by parallelisation decreases (or even disappears...)
