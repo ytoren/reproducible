@@ -7,7 +7,7 @@ population_file <- 'population.csv'
 sighting_file <- 'ufo_sighting.csv'
 joined_file <- 'population_sighting_by_year.csv'
 
-# Population data ---------------------------------------------------------
+# Adjust population data ----------------------------------------------------
 
 # Read all CSV files
 census_files <- list.files(paste0(file_path, cencsus_file_dir), full.names=TRUE)
@@ -24,7 +24,7 @@ census_data <- census_data %>%
   write_csv(paste0(file_path, population_file))
 
 
-# UFO sitings -------------------------------------------------------------
+# Scrape UFO sightings ----------------------------------------------------
 library(jsonlite)
 library(rvest)
 
