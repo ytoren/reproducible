@@ -106,3 +106,11 @@ venv.bak/
 .DS_Store
 *.pickle
 *.feather
+
+# R
+.RData
+.Rhistory
+
+# Project specific
+stan-example-ufo/data/*.csv
+stan-example-ufo/data/output/*
