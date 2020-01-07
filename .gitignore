@@ -114,3 +114,4 @@ venv.bak/
 # Project specific
 stan/example-ufo/data/*.csv
 stan/example-ufo/data/output/*
+.Rproj.user
