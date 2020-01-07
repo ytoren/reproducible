@@ -35,5 +35,4 @@ model {
 
 generated quantities {
   real sigma_degrees = sigma_angle * 180 / pi();
-  vector[N] raw_proportions_out = to_vector(y) ./ to_vector(n);
 }

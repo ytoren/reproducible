@@ -4,7 +4,7 @@ library(ggplot2)
 library(dplyr)
 library(rstan)
 
-rstan_options(auto_write=TRUE)
+rstan_options(auto_write=FALSE)
 options(mc.cores=parallel::detectCores())
 
 
@@ -36,7 +36,7 @@ show(p1)
 
 # Logistic Model ----------------------------------------------------------
 golf_data <- with(d, list(x=x, y=y, n=n, N=dim(d)[1]))
-fit_logistic <- stan("~/Documents/Code/golf-gelman/logistic.stan", data=golf_data)
+fit_logistic <- stan("stan/golf-trig/logistic.stan", data=golf_data)
 a_sim <- extract(fit_logistic, 'a')[[1]]
 b_sim <- extract(fit_logistic, 'b')[[1]]
 
@@ -59,10 +59,7 @@ show(p2)
 r <- (1.68/2)/12
 R <- (4.25/2)/12
 
-fit_trig <- stan(
-  file = "~/Documents/Code/golf-gelman/trig.stan", 
-  data=c(golf_data, r=r, R=R)
-)
+fit_trig <- stan(file = "stan/golf-trig/trig.stan", data=c(golf_data, r=r, R=R))
 
 print(fit_trig, pars = c('sigma', 'sigma_degrees'))
 
@@ -76,11 +73,11 @@ p3 <- p1 +
   stat_function(fun = generate_trig(mean(sigma_sim)),  color = 'blue',  lwd = 0.3) 
 
 show(p3)  
-  
+
 
 # Aug Trig model ----------------------------------------------------------
 fit_trig_aug <- stan(
-  file = "~/Documents/Code/golf-gelman/trig_overshot.stan", 
+  file = "stan/golf-trig/trig_overshot.stan", 
   data=c(golf_data, r=r, R=R, overshot = 1., distance_tolerance = 3.)
 )
 
@@ -88,4 +85,19 @@ print(fit_trig_aug, pars = c('sigma_distance', 'sigma_angle', 'sigma_degrees', '
 
 
 # Residuals ---------------------------------------------------------------
-extract(fit_trig_aug, 'raw_proportions')[[1]]
+d %>% 
+  mutate(
+    p_mean = apply(X = extract(fit_trig_aug, 'p')[[1]], MARGIN = 2, FUN = mean),
+    p_sd = apply(X = extract(fit_trig_aug, 'p')[[1]], MARGIN = 2, FUN = sd)
+  ) %>% 
+  ggplot(aes(x = x)) %>% 
+  +geom_errorbar(aes(ymin = p_mean - p_sd, ymax = p_mean + p_sd)) %>% 
+  +geom_point(aes(y = p_mean), colour = 'blue') %>%
+  +geom_point(aes(y = p), colour = 'black')
+
+d %>% 
+  mutate(
+    p_mean = apply(X = extract(fit_trig_aug, 'p')[[1]], MARGIN = 2, FUN = mean),
+    res = p - p_mean
+  ) %>% 
+  ggplot(aes(x = x, y = res)) + geom_point()
