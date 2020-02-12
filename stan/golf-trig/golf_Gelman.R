@@ -2,7 +2,9 @@
 library(rvest)
 library(ggplot2)
 library(dplyr)
+library(magrittr)
 library(rstan)
+library(tidybayes)
 
 rstan_options(auto_write=FALSE)
 options(mc.cores=parallel::detectCores())
@@ -48,12 +50,15 @@ samples <- sample(x = length(a_sim), size = 100, replace = FALSE)
 
 p2 <- p1 + stat_function(fun = generate_logit(median(a_sim), median(b_sim)), color = 'black', lwd = 0.3)
 for (s in samples) {
-  print(c(a_sim[s], b_sim[s]))
+  # print(c(a_sim[s], b_sim[s]))
   p2 <- p2 + stat_function(fun = generate_logit(a_sim[s], b_sim[s]), color = 'green', lwd = 0.1)
 }
 
 show(p2)
 
+d %>% 
+  data_grid(x = seq_range(x, n = 20)) %>% 
+  add_fitted_draws(model = fit_logistic)
 
 # Trig based model -----------------------------------------------------
 r <- (1.68/2)/12
